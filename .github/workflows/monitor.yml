@@ -5,6 +5,7 @@ name: TAMU Monitor de Reservas
 on:
   schedule:
     - cron: "3,13,23,33,43,53 * * * *"
+      timezone: "America/Sao_Paulo"
   workflow_dispatch:
 
 jobs:
