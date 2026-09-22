@@ -1,5 +1,7 @@
 name: TAMU Monitor de Reservas
 
+# Monitor automático a cada 10 minutos
+
 on:
   schedule:
     - cron: "*/10 * * * *"
