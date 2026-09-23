@@ -39,6 +39,8 @@ TELEGRAM_CHAT_ID = os.getenv(
     "-1004471247181"
 )
 
+HEALTHCHECKS_PING_URL = os.getenv("HEALTHCHECKS_PING_URL")
+
 
 PRIMEIRA_EXECUCAO_SILENCIOSA = True
 
@@ -303,6 +305,36 @@ def testar_telegram():
         "Monitor iniciado com sucesso.\n"
         "Telegram conectado ao grupo TAMU."
     )
+
+
+def enviar_healthcheck(sucesso=True):
+    """
+    Envia um sinal externo de saúde para o Healthchecks.io.
+
+    O Healthcheck é opcional: sem HEALTHCHECKS_PING_URL,
+    o monitor continua funcionando normalmente.
+    """
+    if not HEALTHCHECKS_PING_URL:
+        return
+
+    url = HEALTHCHECKS_PING_URL.rstrip("/")
+    if not sucesso:
+        url += "/fail"
+
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+
+        logger.info(
+            "💓 Healthcheck externo enviado: %s",
+            "OK" if sucesso else "FALHA"
+        )
+    except Exception as erro:
+        # O watchdog nunca pode derrubar o monitor.
+        logger.warning(
+            "⚠️ Não foi possível enviar o healthcheck externo: %s",
+            erro
+        )
 
 
 def enviar_heartbeat_diario():
@@ -664,8 +696,21 @@ def main():
             primeira_execucao
         )
 
+        monitor_atual = carregar_monitor()
+        erro_atual = monitor_atual.get("ultimo_erro")
+
+        if erro_atual:
+            # A execução terminou, mas houve falha operacional.
+            enviar_healthcheck(sucesso=False)
+            logger.warning(
+                "⚠️ Ciclo concluído com erro operacional. "
+                "Healthcheck sinalizado como falha."
+            )
+        else:
+            enviar_healthcheck(sucesso=True)
+
         logger.info(
-            "✅ Ciclo concluído com sucesso."
+            "✅ Ciclo concluído."
         )
 
     except Exception as erro:
@@ -680,11 +725,13 @@ def main():
                 status="erro no ciclo",
                 ultimo_erro=str(erro)
             )
-
         except Exception:
             logger.exception(
                 "❌ Não foi possível salvar o status do erro."
             )
+
+        # Sinaliza a falha para o watchdog externo.
+        enviar_healthcheck(sucesso=False)
 
         # Retorna código de erro para o GitHub Actions marcar a execução
         # como falha e facilitar a identificação do problema.
