@@ -319,11 +319,24 @@ def enviar_heartbeat_diario():
     if ultimo_heartbeat == hoje:
         return
 
+    status = monitor.get("status", "nao informado")
+    ultima_verificacao = monitor.get("ultima_verificacao") or "nao registrada"
+    total_processadas = monitor.get("total_reservas_processadas", 0)
+
+    if status == "ativo":
+        status_visual = "🟢 ONLINE"
+    elif status == "ativo com erro":
+        status_visual = "🟡 ONLINE COM ERRO"
+    else:
+        status_visual = "🔴 " + str(status).upper()
+
     mensagem = (
         "🤖 TAMU MONITOR\n\n"
-        "Monitor iniciado com sucesso.\n"
-        "Telegram conectado ao grupo TAMU.\n\n"
-        "🟢 Status: ONLINE\n"
+        "Verificação diária realizada.\n\n"
+        f"{status_visual}\n"
+        "📡 Telegram: OK\n"
+        f"🔎 Última verificação: {ultima_verificacao}\n"
+        f"📋 Reservas processadas: {total_processadas}\n"
         "🕘 Verificação diária: 09:00"
     )
 
@@ -335,6 +348,8 @@ def enviar_heartbeat_diario():
     salvar_monitor(monitor)
 
     logger.info("💚 Heartbeat diário enviado com sucesso.")
+
+
 
 
 # ============================================================
@@ -633,9 +648,17 @@ def main():
         and not processadas
     )
 
+    # O heartbeat é independente do monitoramento de reservas.
+    # Se o Telegram falhar, isso não pode impedir a consulta à Stays.
     try:
         enviar_heartbeat_diario()
+    except Exception:
+        logger.exception(
+            "⚠️ Falha ao enviar o heartbeat diário. "
+            "O monitoramento de reservas continuará normalmente."
+        )
 
+    try:
         executar_ciclo(
             processadas,
             primeira_execucao
