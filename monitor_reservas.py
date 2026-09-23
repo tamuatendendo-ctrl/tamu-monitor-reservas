@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 from requests.auth import HTTPBasicAuth
@@ -305,7 +306,7 @@ def testar_telegram():
 
 
 def enviar_heartbeat_diario():
-    agora = datetime.now()
+    agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
 
     if agora.hour < 9:
         return
