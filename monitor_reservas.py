@@ -304,6 +304,38 @@ def testar_telegram():
     )
 
 
+def enviar_heartbeat_diario():
+    agora = datetime.now()
+
+    if agora.hour < 9:
+        return
+
+    hoje = agora.strftime("%Y-%m-%d")
+
+    monitor = carregar_monitor()
+    ultimo_heartbeat = monitor.get("ultimo_heartbeat")
+
+    if ultimo_heartbeat == hoje:
+        return
+
+    mensagem = (
+        "🤖 TAMU MONITOR\n\n"
+        "Monitor iniciado com sucesso.\n"
+        "Telegram conectado ao grupo TAMU.\n\n"
+        "🟢 Status: ONLINE\n"
+        "🕘 Verificação diária: 09:00"
+    )
+
+    enviar_telegram(mensagem)
+
+    monitor["ultimo_heartbeat"] = hoje
+    monitor["telegram"] = "conectado"
+
+    salvar_monitor(monitor)
+
+    logger.info("💚 Heartbeat diário enviado com sucesso.")
+
+
 # ============================================================
 # PREPARACAO DA RESERVA
 # ============================================================
@@ -601,6 +633,8 @@ def main():
     )
 
     try:
+        enviar_heartbeat_diario()
+
         executar_ciclo(
             processadas,
             primeira_execucao
