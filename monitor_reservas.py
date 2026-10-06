@@ -33,6 +33,7 @@ MAX_RESERVAS_HISTORICO = 20
 
 ARQUIVO_PROCESSADAS = BASE_DIR / "reservas_processadas.json"
 ARQUIVO_MONITOR = BASE_DIR / "reservas_monitor.json"
+ARQUIVO_HEALTHCHECK = BASE_DIR / "healthcheck_estado.json"
 
 TELEGRAM_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
@@ -193,8 +194,7 @@ def atualizar_status_monitor(
 
     if status is not None:
         monitor["status"] = status
-
-    if ultimo_erro is not None:
+        # Quando o status volta a ativo, limpa um erro anterior.
         monitor["ultimo_erro"] = ultimo_erro
 
     if telegram is not None:
@@ -308,76 +308,6 @@ def testar_telegram():
     )
 
 
-def enviar_aviso_recuperacao_healthcheck():
-    """
-    Verifica se o Healthchecks acabou de registrar uma recuperacao
-    (DOWN -> UP) e, nesse caso, envia um aviso unico no Telegram.
-
-    O aviso usa uma janela curta porque o monitor roda a cada 10 minutos.
-    Se a consulta falhar, isso nunca derruba o monitor.
-    """
-    if not HEALTHCHECKS_PING_URL or not HEALTHCHECKS_API_KEY:
-        return
-
-    try:
-        # O UUID do check esta no final da URL de ping.
-        check_id = HEALTHCHECKS_PING_URL.rstrip("/").split("/")[-1]
-
-        url = (
-            "https://healthchecks.io/api/v3/checks/"
-            + check_id
-            + "/flips/?seconds=540"
-        )
-
-        response = requests.get(
-            url,
-            headers={"X-Api-Key": HEALTHCHECKS_API_KEY},
-            timeout=10,
-        )
-        response.raise_for_status()
-
-        flips = response.json()
-
-        if not isinstance(flips, list) or len(flips) < 2:
-            return
-
-        # O Healthchecks retorna os flips do mais recente para o mais antigo.
-        ultimo = flips[0]
-        anterior = flips[1]
-
-        # Recuperacao real: o ultimo flip foi DOWN -> UP.
-        if ultimo.get("up") != 1 or anterior.get("up") != 0:
-            return
-
-        timestamp = ultimo.get("timestamp")
-        if not timestamp:
-            return
-
-        recuperado_em = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-        agora_utc = datetime.now(recuperado_em.tzinfo)
-
-        # Evita repetir o aviso nas execucoes seguintes.
-        idade_segundos = (agora_utc - recuperado_em).total_seconds()
-
-        if 0 <= idade_segundos <= 540:
-            enviar_telegram(
-                "🟢 TAMU MONITOR STAYS\n\n"
-                "O monitor voltou ao normal!\n"
-                "✅ Healthcheck recuperado."
-            )
-
-            logger.info(
-                "🟢 Aviso de recuperacao enviado ao Telegram."
-            )
-
-    except Exception as erro:
-        # O aviso de recuperacao nunca pode derrubar o monitor.
-        logger.warning(
-            "⚠️ Não foi possível verificar a recuperação do Healthchecks: %s",
-            erro,
-        )
-
-
 def enviar_healthcheck(sucesso=True):
     """
     Envia um sinal externo de saúde para o Healthchecks.io.
@@ -407,6 +337,139 @@ def enviar_healthcheck(sucesso=True):
             erro
         )
 
+
+def carregar_estado_healthcheck():
+    if not ARQUIVO_HEALTHCHECK.exists():
+        return {"ultimo_status": None, "ultimo_flip_id": None}
+
+    try:
+        with ARQUIVO_HEALTHCHECK.open("r", encoding="utf-8") as arquivo:
+            dados = json.load(arquivo)
+
+        if not isinstance(dados, dict):
+            return {"ultimo_status": None, "ultimo_flip_id": None}
+
+        return {
+            "ultimo_status": dados.get("ultimo_status"),
+            "ultimo_flip_id": dados.get("ultimo_flip_id"),
+        }
+
+    except Exception as erro:
+        logger.warning(
+            "Falha lendo %s: %s",
+            ARQUIVO_HEALTHCHECK.name,
+            erro,
+        )
+        return {"ultimo_status": None, "ultimo_flip_id": None}
+
+
+def salvar_estado_healthcheck(dados):
+    temporario = ARQUIVO_HEALTHCHECK.with_suffix(".tmp")
+
+    with temporario.open("w", encoding="utf-8") as arquivo:
+        json.dump(dados, arquivo, indent=4, ensure_ascii=False)
+
+    temporario.replace(ARQUIVO_HEALTHCHECK)
+
+
+def verificar_recuperacao_healthcheck():
+    """
+    Verifica se o Healthchecks registrou uma recuperação DOWN -> UP.
+
+    Usa a API v3 oficial:
+    GET /api/v3/checks/<uuid>/flips/
+
+    A API retorna flips no formato:
+    {"timestamp": "...", "up": 1}  # recuperou / UP
+    {"timestamp": "...", "up": 0}  # ficou DOWN
+
+    A função nunca derruba o monitor principal.
+    """
+    if not HEALTHCHECKS_API_KEY or not HEALTHCHECKS_PING_URL:
+        logger.info(
+            "Healthchecks API Key ou Ping URL não configurada; "
+            "verificação de recuperação ignorada."
+        )
+        return
+
+    estado = carregar_estado_healthcheck()
+
+    try:
+        # O Ping URL contém o UUID do check.
+        check_uuid = HEALTHCHECKS_PING_URL.rstrip("/").split("/")[-1]
+
+        if not check_uuid:
+            logger.warning("Não foi possível identificar o UUID do Healthcheck.")
+            return
+
+        url = f"https://healthchecks.io/api/v3/checks/{check_uuid}/flips/"
+
+        response = requests.get(
+            url,
+            headers={
+                "X-Api-Key": HEALTHCHECKS_API_KEY,
+                "Accept": "application/json",
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        dados = response.json()
+        flips = dados if isinstance(dados, list) else []
+
+        if not flips:
+            logger.info("Nenhum flip encontrado no Healthchecks.")
+            return
+
+        # O Healthchecks retorna os flips do mais recente para o mais antigo.
+        flip_atual = flips[0]
+        timestamp_atual = flip_atual.get("timestamp")
+        up_atual = int(flip_atual.get("up", 0))
+
+        ultimo_timestamp = estado.get("ultimo_flip_id")
+
+        # Primeira leitura após instalar a funcionalidade:
+        # apenas registra o flip atual e NÃO envia alerta.
+        if ultimo_timestamp is None:
+            estado["ultimo_flip_id"] = timestamp_atual
+            estado["ultimo_status"] = "up" if up_atual else "down"
+            salvar_estado_healthcheck(estado)
+
+            logger.info(
+                "Estado inicial do Healthchecks registrado: %s",
+                "UP" if up_atual else "DOWN",
+            )
+            return
+
+        # Nada novo desde a última consulta.
+        if str(timestamp_atual) == str(ultimo_timestamp):
+            return
+
+        status_anterior = estado.get("ultimo_status")
+
+        # Atualiza o estado antes de enviar a mensagem.
+        estado["ultimo_flip_id"] = timestamp_atual
+        estado["ultimo_status"] = "up" if up_atual else "down"
+        salvar_estado_healthcheck(estado)
+
+        # Recuperação real: o último flip conhecido era DOWN e o novo é UP.
+        if status_anterior == "down" and up_atual == 1:
+            enviar_telegram(
+                "🟢 TAMU MONITOR STAYS\n\n"
+                "O monitor voltou ao normal!\n"
+                "✅ Healthcheck recuperado."
+            )
+
+            logger.info(
+                "🟢 Recuperação DOWN -> UP detectada. "
+                "Aviso enviado ao Telegram."
+            )
+
+    except Exception as erro:
+        logger.warning(
+            "⚠️ Não foi possível verificar a recuperação do Healthchecks: %s",
+            erro,
+        )
 
 def enviar_heartbeat_diario():
     agora = datetime.now(ZoneInfo("America/Sao_Paulo"))
@@ -779,7 +842,7 @@ def main():
             )
         else:
             enviar_healthcheck(sucesso=True)
-            enviar_aviso_recuperacao_healthcheck()
+            verificar_recuperacao_healthcheck()
 
         logger.info(
             "✅ Ciclo concluído."
