@@ -33,7 +33,6 @@ MAX_RESERVAS_HISTORICO = 20
 
 ARQUIVO_PROCESSADAS = BASE_DIR / "reservas_processadas.json"
 ARQUIVO_MONITOR = BASE_DIR / "reservas_monitor.json"
-ARQUIVO_HEALTHCHECK = BASE_DIR / "healthcheck_estado.json"
 
 TELEGRAM_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
@@ -339,37 +338,24 @@ def enviar_healthcheck(sucesso=True):
 
 
 def carregar_estado_healthcheck():
-    if not ARQUIVO_HEALTHCHECK.exists():
-        return {"ultimo_status": None, "ultimo_flip_id": None}
-
-    try:
-        with ARQUIVO_HEALTHCHECK.open("r", encoding="utf-8") as arquivo:
-            dados = json.load(arquivo)
-
-        if not isinstance(dados, dict):
-            return {"ultimo_status": None, "ultimo_flip_id": None}
-
-        return {
-            "ultimo_status": dados.get("ultimo_status"),
-            "ultimo_flip_id": dados.get("ultimo_flip_id"),
-        }
-
-    except Exception as erro:
-        logger.warning(
-            "Falha lendo %s: %s",
-            ARQUIVO_HEALTHCHECK.name,
-            erro,
-        )
-        return {"ultimo_status": None, "ultimo_flip_id": None}
+    """
+    Usa o próprio reservas_monitor.json para persistir o estado do
+    Healthchecks entre execuções do GitHub Actions. Esse arquivo já é
+    restaurado e salvo pelo workflow, então não é necessário alterar
+    o monitor.yml.
+    """
+    monitor = carregar_monitor()
+    return {
+        "ultimo_status": monitor.get("healthcheck_ultimo_status"),
+        "ultimo_flip_id": monitor.get("healthcheck_ultimo_flip_id"),
+    }
 
 
 def salvar_estado_healthcheck(dados):
-    temporario = ARQUIVO_HEALTHCHECK.with_suffix(".tmp")
-
-    with temporario.open("w", encoding="utf-8") as arquivo:
-        json.dump(dados, arquivo, indent=4, ensure_ascii=False)
-
-    temporario.replace(ARQUIVO_HEALTHCHECK)
+    monitor = carregar_monitor()
+    monitor["healthcheck_ultimo_status"] = dados.get("ultimo_status")
+    monitor["healthcheck_ultimo_flip_id"] = dados.get("ultimo_flip_id")
+    salvar_monitor(monitor)
 
 
 def verificar_recuperacao_healthcheck():
