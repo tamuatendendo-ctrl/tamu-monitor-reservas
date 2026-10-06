@@ -40,6 +40,7 @@ TELEGRAM_CHAT_ID = os.getenv(
 )
 
 HEALTHCHECKS_PING_URL = os.getenv("HEALTHCHECKS_PING_URL")
+HEALTHCHECKS_API_KEY = os.getenv("HEALTHCHECKS_API_KEY")
 
 
 PRIMEIRA_EXECUCAO_SILENCIOSA = True
@@ -305,6 +306,76 @@ def testar_telegram():
         "Monitor iniciado com sucesso.\n"
         "Telegram conectado ao grupo TAMU."
     )
+
+
+def enviar_aviso_recuperacao_healthcheck():
+    """
+    Verifica se o Healthchecks acabou de registrar uma recuperacao
+    (DOWN -> UP) e, nesse caso, envia um aviso unico no Telegram.
+
+    O aviso usa uma janela curta porque o monitor roda a cada 10 minutos.
+    Se a consulta falhar, isso nunca derruba o monitor.
+    """
+    if not HEALTHCHECKS_PING_URL or not HEALTHCHECKS_API_KEY:
+        return
+
+    try:
+        # O UUID do check esta no final da URL de ping.
+        check_id = HEALTHCHECKS_PING_URL.rstrip("/").split("/")[-1]
+
+        url = (
+            "https://healthchecks.io/api/v3/checks/"
+            + check_id
+            + "/flips/?seconds=540"
+        )
+
+        response = requests.get(
+            url,
+            headers={"X-Api-Key": HEALTHCHECKS_API_KEY},
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        flips = response.json()
+
+        if not isinstance(flips, list) or len(flips) < 2:
+            return
+
+        # O Healthchecks retorna os flips do mais recente para o mais antigo.
+        ultimo = flips[0]
+        anterior = flips[1]
+
+        # Recuperacao real: o ultimo flip foi DOWN -> UP.
+        if ultimo.get("up") != 1 or anterior.get("up") != 0:
+            return
+
+        timestamp = ultimo.get("timestamp")
+        if not timestamp:
+            return
+
+        recuperado_em = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        agora_utc = datetime.now(recuperado_em.tzinfo)
+
+        # Evita repetir o aviso nas execucoes seguintes.
+        idade_segundos = (agora_utc - recuperado_em).total_seconds()
+
+        if 0 <= idade_segundos <= 540:
+            enviar_telegram(
+                "🟢 TAMU MONITOR STAYS\n\n"
+                "O monitor voltou ao normal!\n"
+                "✅ Healthcheck recuperado."
+            )
+
+            logger.info(
+                "🟢 Aviso de recuperacao enviado ao Telegram."
+            )
+
+    except Exception as erro:
+        # O aviso de recuperacao nunca pode derrubar o monitor.
+        logger.warning(
+            "⚠️ Não foi possível verificar a recuperação do Healthchecks: %s",
+            erro,
+        )
 
 
 def enviar_healthcheck(sucesso=True):
@@ -708,6 +779,7 @@ def main():
             )
         else:
             enviar_healthcheck(sucesso=True)
+            enviar_aviso_recuperacao_healthcheck()
 
         logger.info(
             "✅ Ciclo concluído."
