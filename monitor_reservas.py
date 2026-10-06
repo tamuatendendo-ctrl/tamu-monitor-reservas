@@ -822,6 +822,13 @@ def main():
         if erro_atual:
             # A execução terminou, mas houve falha operacional.
             enviar_healthcheck(sucesso=False)
+
+            # Registra o estado DOWN para que a próxima execução
+            # bem-sucedida possa detectar a recuperação DOWN -> UP.
+            estado_hc = carregar_estado_healthcheck()
+            estado_hc["ultimo_status"] = "down"
+            salvar_estado_healthcheck(estado_hc)
+
             logger.warning(
                 "⚠️ Ciclo concluído com erro operacional. "
                 "Healthcheck sinalizado como falha."
